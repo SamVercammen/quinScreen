@@ -41,7 +41,6 @@ app.get('/', (req, res) => {
 app.post('/login', async (req, res) => {
   const { username, password } = req.body;
 
-  // Op Render altijd headless: true; lokaal eventueel op false zetten om mee te kijken
   const isHeadless = process.env.HEADLESS === 'false' ? false : true;
 
   const browser = await chromium.launch({
@@ -61,22 +60,24 @@ app.post('/login', async (req, res) => {
   const page = await context.newPage();
 
   try {
-    await page.goto('https://web.quinyx.com/', { waitUntil: 'networkidle' });
+    await page.goto('https://web.quinyx.com/', { waitUntil: 'domcontentloaded' });
 
-    // Stap 1: E-mailadres invullen en doorgaan naar het wachtwoordscherm
-    const emailInput = page.locator('input[type="email"], input[name="username"], input[name="email"]').first();
-    await emailInput.waitFor({ state: 'visible', timeout: 15000 });
+    // Stap 1: E-mailadres invullen en op Continue klikken
+    const emailInput = page.locator('[data-test-id="emailOrProviderId"], #emailOrProviderId').first();
+    await emailInput.waitFor({ state: 'visible', timeout: 20000 });
     await emailInput.fill(username);
 
-    const nextButton = page.locator('button[type="submit"], button:has-text("Next"), button:has-text("Volgende"), button:has-text("Continue")').first();
-    await nextButton.click();
+    const continueButton = page.locator('[data-test-id="continue-btn"]').first();
+    await continueButton.waitFor({ state: 'visible', timeout: 10000 });
+    await continueButton.click();
 
-    // Stap 2: Wachtwoordveld afwachten en invullen
-    const passwordInput = page.locator('input[type="password"]').first();
-    await passwordInput.waitFor({ state: 'visible', timeout: 15000 });
+    // Stap 2: Wachtwoord invullen en op Login klikken
+    const passwordInput = page.locator('#password, input[type="password"]').first();
+    await passwordInput.waitFor({ state: 'visible', timeout: 20000 });
     await passwordInput.fill(password);
 
-    const loginButton = page.locator('button[type="submit"], button:has-text("Log in"), button:has-text("Inloggen"), button:has-text("Sign in")').first();
+    const loginButton = page.locator('[data-test-id="login-btn"]').first();
+    await loginButton.waitFor({ state: 'visible', timeout: 10000 });
     await loginButton.click();
 
     // Wacht tot we op web.quinyx.com zitten
@@ -94,20 +95,19 @@ app.post('/login', async (req, res) => {
       sessieOpgeslagen: true
     });
   } catch (err) {
-    // Maak bij een fout een screenshot zodat je op Render/headless ziet waar hij bleef hangen
-    let foutScreenshot = null;
-    try {
-      const buf = await page.screenshot({ fullPage: true });
-      foutScreenshot = `data:image/png;base64,${buf.toString('base64')}`;
-    } catch (_) {}
+    const buf = await page.screenshot({ fullPage: true }).catch(() => null);
+    const imgTag = buf
+      ? `<img src="data:image/png;base64,${buf.toString('base64')}" style="max-width:100%; border:1px solid #444;" />`
+      : '';
 
-    await browser.close();
+    await browser.close().catch(() => {});
 
-    res.status(500).json({
-      gelukt: false,
-      foutmelding: err.message,
-      foutScreenshot
-    });
+    res.status(500).send(`
+      <body style="background:#121212; color:#eee; font-family:sans-serif; padding:1rem;">
+        <h3>Fout: ${err.message}</h3>
+        ${imgTag}
+      </body>
+    `);
   }
 });
 process.on('unhandledRejection', (err) => {
