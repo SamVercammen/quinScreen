@@ -7,6 +7,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+
 const SESSION_FILE = './quinyx-session.json';
 
 app.get('/', (req, res) => {
@@ -109,7 +110,9 @@ app.post('/login', async (req, res) => {
     });
   }
 });
-
-app.listen(PORT, () => {
-  console.log(`Server actief op http://localhost:${PORT}`);
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection:', err);
+});
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server draait op poort ${PORT}`);
 });
