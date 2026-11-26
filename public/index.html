@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <title>Quinyx Workers via Lokale Proxy</title>
+</head>
+<body>
+  <h1>Quinyx Login &amp; Workers (328231)</h1>
+  <p id="status">Status: controleren...</p>
+
+  <form id="loginForm">
+    <label>
+      Gebruikersnaam / E-mail:
+      <input type="text" id="username" required />
+    </label>
+    <br />
+    <label>
+      Wachtwoord:
+      <input type="password" id="password" required />
+    </label>
+    <br />
+    <button type="submit">Inloggen &amp; Data ophalen</button>
+  </form>
+
+  <div style="margin-top: 12px;">
+    <button id="refreshBtn" disabled>Opnieuw ophalen</button>
+    <button id="logoutBtn" disabled>Uitloggen</button>
+  </div>
+
+  <pre id="output"></pre>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const loginForm = document.getElementById("loginForm");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const logoutBtn = document.getElementById("logoutBtn");
+    const outputEl = document.getElementById("output");
+
+    function setLoggedInState(isLoggedIn) {
+      refreshBtn.disabled = !isLoggedIn;
+      logoutBtn.disabled = !isLoggedIn;
+      statusEl.textContent = isLoggedIn
+        ? "Status: ingelogd (sessie actief op proxy)"
+        : "Status: niet ingelogd";
+    }
+
+    async function loadWorkers() {
+      outputEl.textContent = "Medewerkers ophalen...";
+      const res = await fetch("/api/workers");
+      const data = await res.json();
+
+      if (res.status === 401) {
+        setLoggedInState(false);
+        outputEl.textContent = data.error || "Sessie verlopen. Log opnieuw in.";
+        return;
+      }
+
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+
+      outputEl.textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function checkInitialSession() {
+      try {
+        const res = await fetch("/api/session");
+        const session = await res.json();
+        setLoggedInState(session.authenticated);
+
+        if (session.authenticated) {
+          await loadWorkers();
+        } else {
+          outputEl.textContent = "Log in om de data op te halen.";
+        }
+      } catch (err) {
+        statusEl.textContent = "Status: proxy niet bereikbaar";
+        outputEl.textContent = err.message;
+      }
+    }
+
+    loginForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = document.getElementById("username").value.trim();
+      const password = document.getElementById("password").value;
+
+      try {
+        statusEl.textContent = "Status: inloggen...";
+        const res = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || `Login mislukt (HTTP ${res.status})`);
+        }
+
+        setLoggedInState(true);
+        await loadWorkers();
+      } catch (err) {
+        setLoggedInState(false);
+        outputEl.textContent = `Fout: ${err.message}`;
+      }
+    });
+
+    refreshBtn.addEventListener("click", async () => {
+      try {
+        await loadWorkers();
+      } catch (err) {
+        outputEl.textContent = `Fout: ${err.message}`;
+      }
+    });
+
+    logoutBtn.addEventListener("click", async () => {
+      await fetch("/api/logout", { method: "POST" });
+      setLoggedInState(false);
+      outputEl.textContent = "Uitgelogd.";
+    });
+
+    checkInitialSession();
+  </script>
+</body>
+</html>
