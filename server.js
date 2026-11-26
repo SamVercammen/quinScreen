@@ -45,7 +45,11 @@ app.post('/login', async (req, res) => {
 
   const browser = await chromium.launch({
     headless: isHeadless,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage'
+    ]
   });
 
   const context = await browser.newContext({
