@@ -1,234 +1,111 @@
-const express = require("express");
-const path = require("path");
+const express = require('express');
+const { chromium } = require('playwright');
+const fs = require('fs');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
-const QUINYX_LOGIN_URL =
-  process.env.QUINYX_LOGIN_URL || "https://web.quinyx.com/extapi/v1/login";
-const QUINYX_WORKERS_URL =
-  process.env.QUINYX_WORKERS_URL ||
-  "https://web.quinyx.com/extapi/v1/employee/workersof/by-group/328231";
-
+app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
 
-// Request- en foutlogger voor Render logs
-app.use((req, _res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
-  next();
+const PORT = process.env.PORT || 3000;
+const SESSION_FILE = './quinyx-session.json';
+
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="nl">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Quinyx Login Test</title>
+      <style>
+        body { font-family: system-ui, sans-serif; background: #121212; color: #eee; display: grid; place-items: center; min-height: 100vh; margin: 0; }
+        form { background: #1e1e1e; padding: 2rem; border-radius: 12px; width: 320px; display: flex; flex-direction: column; gap: 1rem; border: 1px solid #2e2e2e; }
+        input, button { padding: 0.75rem; border-radius: 8px; border: 1px solid #383838; background: #282828; color: #fff; font-size: 0.95rem; }
+        button { background: #2563eb; border: none; font-weight: 600; cursor: pointer; }
+        button:hover { background: #1d4ed8; }
+      </style>
+    </head>
+    <body>
+      <form method="POST" action="/login">
+        <h2>Quinyx Aanmelden</h2>
+        <input type="email" name="username" placeholder="E-mailadres" required />
+        <input type="password" name="password" placeholder="Wachtwoord" required />
+        <button type="submit">Test Aanmelden</button>
+      </form>
+    </body>
+    </html>
+  `);
 });
 
-// Sessiestatus in geheugen (reset wanneer Render free service in slaap valt/herstart)
-let quinyxSession = {
-  token: null,
-  cookieHeader: null,
-  updatedAt: null
-};
+app.post('/login', async (req, res) => {
+  const { username, password } = req.body;
 
-function logError(context, err, extra = {}) {
-  console.error(`[ERROR][${context}]`, {
-    message: err?.message || String(err),
-    stack: err?.stack || null,
-    ...extra
+  // Op Render altijd headless: true; lokaal eventueel op false zetten om mee te kijken
+  const isHeadless = process.env.HEADLESS === 'false' ? false : true;
+
+  const browser = await chromium.launch({
+    headless: isHeadless,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
-}
 
-function extractCookieHeader(response) {
-  if (typeof response.headers.getSetCookie === "function") {
-    const cookies = response.headers.getSetCookie();
-    if (cookies && cookies.length > 0) {
-      return cookies.map((c) => c.split(";")[0]).join("; ");
-    }
-  }
-  const raw = response.headers.get("set-cookie");
-  return raw ? raw.split(";")[0] : null;
-}
+  const context = await browser.newContext({
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  });
 
-async function parseResponseBody(response) {
-  const text = await response.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { raw: text.slice(0, 2000) };
-  }
-}
-
-app.post("/api/login", async (req, res) => {
-  const { username, password } = req.body || {};
-
-  if (!username || !password) {
-    console.warn("[WARN][/api/login] Ontbrekende username of password");
-    return res
-      .status(400)
-      .json({ error: "Gebruikersnaam en wachtwoord zijn verplicht." });
-  }
+  const page = await context.newPage();
 
   try {
-    console.log(`[INFO][/api/login] Login-poging naar ${QUINYX_LOGIN_URL}`);
+    await page.goto('https://web.quinyx.com/', { waitUntil: 'networkidle' });
 
-    const quinyxRes = await fetch(QUINYX_LOGIN_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json, text/plain, */*",
-        "User-Agent": "Mozilla/5.0 (compatible; QuinyxProxy/1.0)"
-      },
-      // Pas sleutels aan indien Quinyx bv. "email" of "userName" verwacht
-      body: JSON.stringify({ username, password })
-    });
+    // Stap 1: E-mailadres invullen en doorgaan naar het wachtwoordscherm
+    const emailInput = page.locator('input[type="email"], input[name="username"], input[name="email"]').first();
+    await emailInput.waitFor({ state: 'visible', timeout: 15000 });
+    await emailInput.fill(username);
 
-    const payload = await parseResponseBody(quinyxRes);
+    const nextButton = page.locator('button[type="submit"], button:has-text("Next"), button:has-text("Volgende"), button:has-text("Continue")').first();
+    await nextButton.click();
 
-    if (!quinyxRes.ok) {
-      console.error("[ERROR][/api/login] Quinyx wees login af", {
-        status: quinyxRes.status,
-        statusText: quinyxRes.statusText,
-        payload
-      });
-      return res.status(quinyxRes.status).json({
-        error: `Login bij Quinyx mislukt (HTTP ${quinyxRes.status}).`,
-        details: payload
-      });
-    }
+    // Stap 2: Wachtwoordveld afwachten en invullen
+    const passwordInput = page.locator('input[type="password"]').first();
+    await passwordInput.waitFor({ state: 'visible', timeout: 15000 });
+    await passwordInput.fill(password);
 
-    const token =
-      payload?.token ||
-      payload?.accessToken ||
-      payload?.sessionId ||
-      payload?.data?.token ||
-      null;
+    const loginButton = page.locator('button[type="submit"], button:has-text("Log in"), button:has-text("Inloggen"), button:has-text("Sign in")').first();
+    await loginButton.click();
 
-    const cookieHeader = extractCookieHeader(quinyxRes);
+    // Wacht tot we op web.quinyx.com zitten
+    await page.waitForURL('**/web.quinyx.com/**', { timeout: 30000 });
+    await page.waitForLoadState('networkidle');
 
-    quinyxSession = {
-      token,
-      cookieHeader,
-      updatedAt: new Date().toISOString()
-    };
+    await context.storageState({ path: SESSION_FILE });
+    const huidigeUrl = page.url();
 
-    console.log("[INFO][/api/login] Login geslaagd", {
-      hasToken: Boolean(token),
-      hasCookie: Boolean(cookieHeader),
-      updatedAt: quinyxSession.updatedAt
-    });
+    await browser.close();
 
-    return res.json({
-      authenticated: true,
-      hasToken: Boolean(token),
-      hasCookie: Boolean(cookieHeader),
-      updatedAt: quinyxSession.updatedAt
+    res.json({
+      gelukt: true,
+      urlNaLogin: huidigeUrl,
+      sessieOpgeslagen: true
     });
   } catch (err) {
-    logError("/api/login", err, { loginUrl: QUINYX_LOGIN_URL });
-    return res.status(502).json({
-      error: "Kon geen verbinding maken met Quinyx login-endpoint.",
-      message: err.message
+    // Maak bij een fout een screenshot zodat je op Render/headless ziet waar hij bleef hangen
+    let foutScreenshot = null;
+    try {
+      const buf = await page.screenshot({ fullPage: true });
+      foutScreenshot = `data:image/png;base64,${buf.toString('base64')}`;
+    } catch (_) {}
+
+    await browser.close();
+
+    res.status(500).json({
+      gelukt: false,
+      foutmelding: err.message,
+      foutScreenshot
     });
   }
-});
-
-app.get("/api/session", (_req, res) => {
-  const active = Boolean(quinyxSession.token || quinyxSession.cookieHeader);
-  res.json({
-    authenticated: active,
-    hasToken: Boolean(quinyxSession.token),
-    hasCookie: Boolean(quinyxSession.cookieHeader),
-    updatedAt: quinyxSession.updatedAt
-  });
-});
-
-app.get("/api/workers", async (_req, res) => {
-  if (!quinyxSession.token && !quinyxSession.cookieHeader) {
-    console.warn("[WARN][/api/workers] Geen actieve sessie op server");
-    return res
-      .status(401)
-      .json({ error: "Geen actieve Quinyx-sessie. Log eerst in." });
-  }
-
-  const headers = {
-    Accept: "application/json, text/plain, */*",
-    "User-Agent": "Mozilla/5.0 (compatible; QuinyxProxy/1.0)"
-  };
-
-  if (quinyxSession.token) {
-    headers["Authorization"] = `Bearer ${quinyxSession.token}`;
-  }
-  if (quinyxSession.cookieHeader) {
-    headers["Cookie"] = quinyxSession.cookieHeader;
-  }
-
-  try {
-    console.log(`[INFO][/api/workers] Ophalen van ${QUINYX_WORKERS_URL}`);
-
-    const quinyxRes = await fetch(QUINYX_WORKERS_URL, {
-      method: "GET",
-      headers
-    });
-
-    const data = await parseResponseBody(quinyxRes);
-
-    if (quinyxRes.status === 401 || quinyxRes.status === 403) {
-      console.warn("[WARN][/api/workers] Sessie verlopen of geweigerd", {
-        status: quinyxRes.status,
-        data
-      });
-      quinyxSession = { token: null, cookieHeader: null, updatedAt: null };
-      return res.status(401).json({
-        error: "Quinyx-sessie verlopen of geweigerd. Log opnieuw in.",
-        details: data
-      });
-    }
-
-    if (!quinyxRes.ok) {
-      console.error("[ERROR][/api/workers] Fout van Quinyx API", {
-        status: quinyxRes.status,
-        statusText: quinyxRes.statusText,
-        data
-      });
-      return res.status(quinyxRes.status).json({
-        error: `Fout bij ophalen van workers (HTTP ${quinyxRes.status}).`,
-        details: data
-      });
-    }
-
-    console.log("[INFO][/api/workers] Workers succesvol opgehaald");
-    return res.json(data);
-  } catch (err) {
-    logError("/api/workers", err, { workersUrl: QUINYX_WORKERS_URL });
-    return res.status(502).json({
-      error: "Proxy-fout bij ophalen van workers.",
-      message: err.message
-    });
-  }
-});
-
-app.post("/api/logout", (_req, res) => {
-  quinyxSession = { token: null, cookieHeader: null, updatedAt: null };
-  console.log("[INFO][/api/logout] Sessie gewist");
-  res.json({ authenticated: false });
-});
-
-// Centrale error handler voor onverwachte Express-fouten
-app.use((err, _req, res, _next) => {
-  logError("express-middleware", err);
-  res.status(500).json({
-    error: "Onverwachte serverfout in proxy.",
-    message: err?.message || "Onbekende fout"
-  });
-});
-
-process.on("unhandledRejection", (reason) => {
-  logError("unhandledRejection", reason);
-});
-
-process.on("uncaughtException", (err) => {
-  logError("uncaughtException", err);
 });
 
 app.listen(PORT, () => {
-  console.log(`[INFO] Quinyx proxy luistert op poort ${PORT}`);
-  console.log(`[INFO] Login URL:   ${QUINYX_LOGIN_URL}`);
-  console.log(`[INFO] Workers URL: ${QUINYX_WORKERS_URL}`);
+  console.log(`Server actief op http://localhost:${PORT}`);
 });
