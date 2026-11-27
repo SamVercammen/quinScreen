@@ -214,17 +214,24 @@ app.post('/login', async (req, res) => {
     ]
   });
 
-  const context = await browser.newContext(
-    Object.assign(
-      {
-        userAgent:
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-      },
-      fs.existsSync(SESSION_FILE) ? { storageState: SESSION_FILE } : {}
-    )
-  );
+  const context = await browser.newContext({
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  });
 
   const page = await context.newPage();
+  const extapiLog = [];
+
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (url.includes('/extapi/')) {
+      extapiLog.push({
+        method: response.request().method(),
+        status: response.status(),
+        url
+      });
+    }
+  });
 
   try {
     await page.goto('https://web.quinyx.com/', { waitUntil: 'domcontentloaded' });
@@ -249,13 +256,11 @@ app.post('/login', async (req, res) => {
       await page.waitForURL('**/web.quinyx.com/**', { timeout: 30000 });
     }
 
-    // Navigeer naar het dashboard van de groep zodat de sessie-context klopt
     await page.goto(`https://web.quinyx.com/dashboard/${GROUP_ID}`, {
       waitUntil: 'networkidle'
     });
-    await context.storageState({ path: SESSION_FILE }).catch(() => {});
+    await page.waitForTimeout(1500);
 
-    // Haal het endpoint op met de vereiste Quinyx-headers
     const apiResult = await page.evaluate(
       async ({ url, groupId }) => {
         const resp = await fetch(url, {
@@ -282,13 +287,17 @@ app.post('/login', async (req, res) => {
       { url: EMPLOYEES_URL, groupId: GROUP_ID }
     );
 
+    const huidigeUrl = page.url();
     await browser.close();
 
     if (!apiResult.ok) {
       return res.status(apiResult.status || 500).send(`
         <body style="background:#121212;color:#eee;font-family:sans-serif;padding:2rem;">
           <h3>API fout (${apiResult.status}) bij ophalen van employees</h3>
+          <p>Huidige URL: ${escapeHtml(huidigeUrl)}</p>
           <pre>${escapeHtml(apiResult.text)}</pre>
+          <h4>Geziene /extapi/ calls door de browser:</h4>
+          <pre>${escapeHtml(JSON.stringify(extapiLog, null, 2))}</pre>
         </body>
       `);
     }
@@ -311,7 +320,6 @@ app.post('/login', async (req, res) => {
     `);
   }
 });
-
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server actief op poort ${PORT}`);
 });
