@@ -8,7 +8,8 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const SESSION_FILE = './quinyx-session.json';
-const WORKERS_URL = 'https://web.quinyx.com/extapi/v1/employee/workersof/by-group/328231';
+const GROUP_ID = '328231';
+const EMPLOYEES_URL = `https://web.quinyx.com/extapi/v1/employee/by-group/${GROUP_ID}`;
 
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled rejection:', err);
@@ -72,7 +73,7 @@ function renderWorkersTableHtml(rawData, targetUrl) {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Quinyx Workers - Groep 328231</title>
+      <title>Quinyx Employees - Groep ${escapeHtml(GROUP_ID)}</title>
       <style>
         body {
           font-family: system-ui, -apple-system, sans-serif;
@@ -151,7 +152,7 @@ function renderWorkersTableHtml(rawData, targetUrl) {
       <div class="card">
         <div class="header">
           <div>
-            <h2>Workers — Groep 328231 (${rows.length})</h2>
+            <h2>Employees — Groep ${escapeHtml(GROUP_ID)} (${rows.length})</h2>
             <div class="meta">${escapeHtml(targetUrl)}</div>
           </div>
           <a class="btn" href="/">Opnieuw inloggen / verversen</a>
@@ -179,7 +180,7 @@ app.get('/', (req, res) => {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Quinyx Login & Workers</title>
+      <title>Quinyx Login & Employees</title>
       <style>
         body { font-family: system-ui, sans-serif; background: #121212; color: #eee; display: grid; place-items: center; min-height: 100vh; margin: 0; }
         form { background: #1e1e1e; padding: 2rem; border-radius: 12px; width: 320px; display: flex; flex-direction: column; gap: 1rem; border: 1px solid #2e2e2e; }
@@ -228,7 +229,6 @@ app.post('/login', async (req, res) => {
   try {
     await page.goto('https://web.quinyx.com/', { waitUntil: 'domcontentloaded' });
 
-    // Alleen inloggen als we op de loginpagina terechtkomen
     if (page.url().includes('login.quinyx.com')) {
       const emailInput = page.locator('[data-test-id="emailOrProviderId"], #emailOrProviderId').first();
       await emailInput.waitFor({ state: 'visible', timeout: 20000 });
@@ -249,42 +249,52 @@ app.post('/login', async (req, res) => {
       await page.waitForURL('**/web.quinyx.com/**', { timeout: 30000 });
     }
 
-    await page.waitForLoadState('networkidle');
+    // Navigeer naar het dashboard van de groep zodat de sessie-context klopt
+    await page.goto(`https://web.quinyx.com/dashboard/${GROUP_ID}`, {
+      waitUntil: 'networkidle'
+    });
     await context.storageState({ path: SESSION_FILE }).catch(() => {});
 
-    // Haal het workers-endpoint op binnen de ingelogde browsercontext
-    const apiResult = await page.evaluate(async (url) => {
-      const resp = await fetch(url, {
-        method: 'GET',
-        credentials: 'include',
-        headers: { Accept: 'application/json, text/plain, */*' }
-      });
-      const text = await resp.text();
-      let json = null;
-      try {
-        json = JSON.parse(text);
-      } catch (_) {}
-      return {
-        status: resp.status,
-        ok: resp.ok,
-        json,
-        text
-      };
-    }, WORKERS_URL);
+    // Haal het endpoint op met de vereiste Quinyx-headers
+    const apiResult = await page.evaluate(
+      async ({ url, groupId }) => {
+        const resp = await fetch(url, {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            Accept: '*/*',
+            'x-current-group': String(groupId),
+            'x-requested-with': 'love'
+          }
+        });
+        const text = await resp.text();
+        let json = null;
+        try {
+          json = JSON.parse(text);
+        } catch (_) {}
+        return {
+          status: resp.status,
+          ok: resp.ok,
+          json,
+          text
+        };
+      },
+      { url: EMPLOYEES_URL, groupId: GROUP_ID }
+    );
 
     await browser.close();
 
     if (!apiResult.ok) {
       return res.status(apiResult.status || 500).send(`
         <body style="background:#121212;color:#eee;font-family:sans-serif;padding:2rem;">
-          <h3>API fout (${apiResult.status}) bij ophalen van workers</h3>
+          <h3>API fout (${apiResult.status}) bij ophalen van employees</h3>
           <pre>${escapeHtml(apiResult.text)}</pre>
         </body>
       `);
     }
 
     const payload = apiResult.json !== null ? apiResult.json : apiResult.text;
-    res.send(renderWorkersTableHtml(payload, WORKERS_URL));
+    res.send(renderWorkersTableHtml(payload, EMPLOYEES_URL));
   } catch (err) {
     const buf = await page.screenshot({ fullPage: true }).catch(() => null);
     const imgTag = buf
